@@ -1,0 +1,30 @@
+version: '3.8'
+services:
+  mongo:
+    image: mongo:6
+    volumes: ['mongo-data:/data/db']
+  redis:
+    image: redis:7
+  backend:
+    build: ./backend
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/tasks
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=devsecret
+    ports:
+      - 4000:4000
+    depends_on: [mongo, redis]
+  worker:
+    build: ./worker
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/tasks
+      - REDIS_URL=redis://redis:6379
+    depends_on: [mongo, redis]
+  frontend:
+    build: ./frontend
+    ports:
+      - 3000:80
+    depends_on: [backend]
+
+volumes:
+  mongo-data:

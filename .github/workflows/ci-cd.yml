@@ -1,0 +1,73 @@
+name: CI-CD
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set image tag
+        id: tag
+        run: |
+          echo "GIT_REF=${GITHUB_REF}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+          else
+            TAG_NAME=${GITHUB_SHA}
+          fi
+          echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Build and push images
+        uses: docker/build-push-action@v4
+        with:
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/task-backend:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/task-backend:latest
+            ghcr.io/${{ github.repository_owner }}/task-frontend:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/task-frontend:latest
+            ghcr.io/${{ github.repository_owner }}/task-worker:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/task-worker:latest
+      - name: Run lint + tests
+        run: |
+          set -e
+          # Backend lint
+          cd backend || exit 1
+          npm ci --silent
+          npm run lint
+          cd ..
+          # Frontend lint + build
+          cd frontend || exit 1
+          npm ci --silent
+          npm run lint
+          npm run build || exit 1
+          cd ..
+          # Worker lint
+          python -m pip install --upgrade pip
+          python -m pip install -r worker/requirements.txt
+          python -m flake8 worker
+      - name: Update infra repo manifests
+        run: |
+          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/ORG/infra-repo.git infra
+          cd infra
+          # Replace :latest with the specific image tag for backend/frontend/worker
+          sed -i "s@task-backend:latest@task-backend:${{ steps.tag.outputs.tag }}@g" infra/k8s/backend-deployment.yaml || true
+          sed -i "s@task-frontend:latest@task-frontend:${{ steps.tag.outputs.tag }}@g" infra/k8s/frontend-deployment.yaml || true
+          sed -i "s@task-worker:latest@task-worker:${{ steps.tag.outputs.tag }}@g" infra/k8s/worker-deployment.yaml || true
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add .
+          git commit -m "ci: update images to ${{ steps.tag.outputs.tag }}" || true
+          git push origin main || true
